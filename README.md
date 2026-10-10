@@ -6,7 +6,7 @@ Built for [TRMNL](https://usetrmnl.com), powered by free community ADS-B data, a
 
 | Plugin preview (TRMNL X, 16 grays) | On the device |
 | :---: | :---: |
-| ![Plugin preview](docs/preview.png) | ![Photo of the plugin on a TRMNL X](docs/device.jpg) |
+| ![Plugin preview](docs/preview.jpeg) | ![Photo of the plugin on a TRMNL X](docs/device.jpg) |
 
 > **Not for navigation.** This is a hobby / situational-awareness display built on community-fed, unverified ADS-B data. It can be delayed, incomplete, or wrong. Never use it for flight planning, separation, or any operational decision.
 
