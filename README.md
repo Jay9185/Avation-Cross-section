@@ -4,6 +4,9 @@ A live **vertical slice of the sky** over your airport, drawn on an e-ink screen
 
 Built for [TRMNL](https://usetrmnl.com), powered by free community ADS-B data, and served by a small Cloudflare Worker that does all the heavy lifting so the Liquid template stays a simple renderer.
 
+> 📖 **More from the author:** I'm a cadet pilot training at Phoenix Deer Valley and I write about building for TRMNL on TurbulenceGains: [TRMNL review](https://turbulencegains.com/trmnl-review-2026/) · [TRMNL Flight Radar guide](https://turbulencegains.com/trmnl-flight-radar-guide/) · [all my projects](https://turbulencegains.com/about/#projects).
+
+
 | Plugin preview (TRMNL X, 16 grays) | On the device |
 | :---: | :---: |
 | ![Plugin preview](docs/preview.jpeg) | ![Photo of the plugin on a TRMNL X](docs/device.jpg) |
