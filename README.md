@@ -253,7 +253,7 @@ These are volunteer-run networks. Please be a good citizen:
 - **ADS-B data:** [airplanes.live](https://airplanes.live), [adsb.lol](https://adsb.lol), and [adsb.fi](https://adsb.fi), and the thousands of volunteers who feed them.
 - **Platform:** [TRMNL](https://usetrmnl.com) (e-ink device, Private Plugins, and the framework CSS) and [Cloudflare Workers + KV](https://workers.cloudflare.com).
 - **Author:** Jay Kumar Bhatiya — [TurbulenceGains.com](https://turbulencegains.com), a publication at the intersection of aviation, wearable technology, and developer projects.
-- Layout engine and documentation developed with help from Claude (Anthropic).
+- Documentation developed with help from Claude (Anthropic).
 
 <!-- TODO: add credit and license for the airport tower icon (ground_tower) once its source is confirmed. -->
 
