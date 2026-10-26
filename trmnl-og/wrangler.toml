@@ -13,7 +13,7 @@ OWNSHIP_ALT_FT = "1135"      # field elevation, draws the ground line
 LOW_SLOTS = "5"              # aircraft below LOW_FT, nearest first
 LOW_FT = "12000"
 ALT_SLOTS = "7"              # highest remaining aircraft
-REFRESH_SECONDS = "20"       # sent to the device as refresh_rate
+REFRESH_SECONDS = "5"       # sent to the device as refresh_rate
 TIME_ZONE = "America/Phoenix"
 ROUTES = "true"              # origin-destination on airliner tags
 XS_MODE = "ew"               # ew = west/east of the airport, radial = airport on the left

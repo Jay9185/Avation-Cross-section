@@ -55,7 +55,7 @@ export default {
         });
       }
       if (url.pathname === '/api/display') {
-        const bucket = Math.floor(Date.now() / 1000 / Math.max(5, cfg.refresh));
+        const bucket = Math.floor(Date.now() / 1000 / Math.max(1, cfg.refresh));
         return json({
           status: 0,
           image_url: `${origin}/img/xs-${bucket.toString(36)}.bmp${url.search.includes('demo') ? '?demo=1' : ''}`,
@@ -87,7 +87,7 @@ function config(env) {
   return {
     lat: n('LATITUDE'), lon: n('LONGITUDE'), radius: n('RADIUS_NM'), fieldAlt: n('OWNSHIP_ALT_FT'),
     lowSlots: Math.round(n('LOW_SLOTS')), lowFt: n('LOW_FT'), altSlots: Math.round(n('ALT_SLOTS')),
-    refresh: Math.max(5, Math.round(n('REFRESH_SECONDS'))),
+    refresh: Math.max(1, Math.round(n("REFRESH_SECONDS"))),
     label: String(env.AIRPORT_LABEL || DEFAULTS.AIRPORT_LABEL).toUpperCase().slice(0, 5),
     tz: String(env.TIME_ZONE || DEFAULTS.TIME_ZONE),
     routes: String(env.ROUTES ?? DEFAULTS.ROUTES) !== 'false',
