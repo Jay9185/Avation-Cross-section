@@ -116,7 +116,7 @@ let memo = { at: 0, key: '', list: null };
 
 async function fetchAircraft(cfg) {
   const key = `${cfg.lat},${cfg.lon},${cfg.radius}`;
-  if (memo.list && memo.key === key && Date.now() - memo.at < 8000) return memo.list;
+  if (memo.list && memo.key === key && Date.now() - memo.at < 6000) return memo.list;
   let lastErr = 'no sources';
   for (const build of SOURCES) {
     const url = build(cfg.lat, cfg.lon, cfg.radius);
@@ -201,8 +201,26 @@ function distNm(la1, lo1, la2, lo2) {
   return 3440.065 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function pickFlights(list, cfg) {
+// Dead reckoning: the ADS-B snapshot is a few seconds old by the time we draw, and the screen is redrawn
+// every second or so, so slide each aircraft along its track (and vertical rate) by the data's age.
+function advance(a, age) {
+  const dt = Math.min(Math.max(age + (Number(a.seen_pos) || 0), 0), 30);
+  if (!(dt > 0) || typeof a.lat !== 'number' || typeof a.lon !== 'number') return a;
+  const out = { ...a };
+  const gs = Number(a.gs) || 0, trk = Number(a.track);
+  if (gs > 30 && Number.isFinite(trk)) {
+    const nm = (gs * dt) / 3600;
+    out.lat = a.lat + (nm * Math.cos(toRad(trk))) / 60;
+    out.lon = a.lon + (nm * Math.sin(toRad(trk))) / (60 * Math.cos(toRad(a.lat)));
+  }
+  const vr = Number(a.baro_rate ?? a.geom_rate ?? 0);
+  if (typeof a.alt_baro === 'number' && Number.isFinite(vr)) out.alt_baro = Math.max(0, a.alt_baro + (vr * dt) / 60);
+  return out;
+}
+
+function pickFlights(list, cfg, age = 0) {
   const eligible = list
+    .map((a) => advance(a, age))
     .filter((a) => typeof a.lat === 'number' && typeof a.lon === 'number' && typeof a.alt_baro === 'number')
     .map((a) => {
       const callsign = String(a.flight || a.r || a.hex || '').trim().toUpperCase();
@@ -243,7 +261,7 @@ async function renderFrame(cfg, demo) {
   const fb = new Fb();
   let list = [], err = '';
   try { list = demo ? demoList(cfg) : await fetchAircraft(cfg); } catch (e) { err = e.message; }
-  const { shown, total, eligible } = pickFlights(list, cfg);
+  const { shown, total, eligible } = pickFlights(list, cfg, demo ? 0 : (Date.now() - memo.at) / 1000);
   if (cfg.routes && !demo) await lookupRoutes(shown);
   if (demo) for (const f of shown) if (f.airline) f.route = { SWA1844: 'DEN-PHX', AAL2291: 'PHX-DFW', UAL1520: 'SFO-PHX', DAL1123: 'PHX-ATL', FDX772: 'MEM-LAX' }[f.callsign] || '';
   drawFrame(fb, cfg, shown, total, eligible, err);
