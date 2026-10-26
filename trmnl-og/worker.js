@@ -23,7 +23,7 @@ const ICON_MUL = 1.15;  // the OG panel is small, so the X plugin's icon sizes a
 const DEFAULTS = {
   LATITUDE: 33.4343, LONGITUDE: -112.0116, RADIUS_NM: 30, AIRPORT_LABEL: 'KPHX',
   OWNSHIP_ALT_FT: 1135, LOW_SLOTS: 5, LOW_FT: 12000, ALT_SLOTS: 7,
-  REFRESH_SECONDS: 20, TIME_ZONE: 'America/Phoenix', ROUTES: 'true', XS_MODE: 'ew',
+  TAG_HOLD_SECONDS: 10, REFRESH_SECONDS: 20, TIME_ZONE: 'America/Phoenix', ROUTES: 'true', XS_MODE: 'ew',
 };
 
 const BROWSER_HEADERS = {
@@ -89,6 +89,7 @@ function config(env) {
     lat: n('LATITUDE'), lon: n('LONGITUDE'), radius: n('RADIUS_NM'), fieldAlt: n('OWNSHIP_ALT_FT'),
     lowSlots: Math.round(n('LOW_SLOTS')), lowFt: n('LOW_FT'), altSlots: Math.round(n('ALT_SLOTS')),
     refresh: Math.max(1, Math.round(n("REFRESH_SECONDS"))),
+    tagHold: Math.max(1, Math.round(n('TAG_HOLD_SECONDS'))),
     label: String(env.AIRPORT_LABEL || DEFAULTS.AIRPORT_LABEL).toUpperCase().slice(0, 5),
     tz: String(env.TIME_ZONE || DEFAULTS.TIME_ZONE),
     routes: String(env.ROUTES ?? DEFAULTS.ROUTES) !== 'false',
@@ -177,8 +178,8 @@ const DEMO = [
   { flight: 'LIFE31', t: 'EC35', category: 'A7', x: 1.5, alt: 2200, gs: 120, track: 40, vr: 0 },
   { flight: 'RCH407', t: 'C17', category: 'A5', dbFlags: 1, x: 18, alt: 19000, gs: 380, track: 270, vr: 0 },
 ];
-function demoList(cfg) {
-  const t = Date.now() / 1000;
+function demoList(cfg, tms = Date.now()) {
+  const t = tms / 1000;
   return DEMO.map((p, i) => {
     const period = 900;
     const tau = ((t + i * 97) % period) - period / 2;
@@ -204,8 +205,8 @@ function distNm(la1, lo1, la2, lo2) {
 // Dead reckoning: the ADS-B snapshot is a few seconds old by the time we draw, and the screen is redrawn
 // every second or so, so slide each aircraft along its track (and vertical rate) by the data's age.
 function advance(a, age) {
-  const dt = Math.min(Math.max(age + (Number(a.seen_pos) || 0), 0), 30);
-  if (!(dt > 0) || typeof a.lat !== 'number' || typeof a.lon !== 'number') return a;
+  const dt = Math.min(Math.max(age + (Number(a.seen_pos) || 0), -30), 30);
+  if (!dt || typeof a.lat !== 'number' || typeof a.lon !== 'number') return a;
   const out = { ...a };
   const gs = Number(a.gs) || 0, trk = Number(a.track);
   if (gs > 30 && Number.isFinite(trk)) {
@@ -233,7 +234,7 @@ function pickFlights(list, cfg, age = 0) {
       const brg = bearing(cfg.lat, cfg.lon, a.lat, a.lon);
       const rel = (heading - brg + 360) % 360;
       return {
-        callsign, type: String(a.t || '').toUpperCase(), alt: Math.round(a.alt_baro), gs: Math.round(a.gs || 0),
+        key: String(a.hex || callsign), callsign, type: String(a.t || '').toUpperCase(), alt: Math.round(a.alt_baro), gs: Math.round(a.gs || 0),
         heading: Math.round(heading), climbing: vr > 500, descending: vr < -500,
         dist, dx, lat: a.lat, lon: a.lon, military: (Number(a.dbFlags) & 1) === 1,
         icon: ico.shape, iconScale: ico.scale, outbound: rel < 90 || rel > 270,
@@ -261,7 +262,13 @@ async function renderFrame(cfg, demo) {
   const fb = new Fb();
   let list = [], err = '';
   try { list = demo ? demoList(cfg) : await fetchAircraft(cfg); } catch (e) { err = e.message; }
-  const { shown, total, eligible } = pickFlights(list, cfg, demo ? 0 : (Date.now() - memo.at) / 1000);
+  // Tags are laid out from a snapshot that only changes every TAG_HOLD_SECONDS, so they stay put and
+  // their text updates slowly; the icons are drawn at the live position and joined to their tag by a leader line.
+  const tNow = Date.now(), tLay = Math.floor(tNow / (cfg.tagHold * 1000)) * (cfg.tagHold * 1000);
+  const ageAt = (t) => (demo ? 0 : (t - memo.at) / 1000);
+  const { shown, total, eligible } = pickFlights(demo ? demoList(cfg, tLay) : list, cfg, ageAt(tLay));
+  const live = new Map(pickFlights(demo ? demoList(cfg, tNow) : list, cfg, ageAt(tNow)).eligible.map((f) => [f.key, f]));
+  for (const f of shown) f.now = live.get(f.key) || f;
   if (cfg.routes && !demo) await lookupRoutes(shown);
   if (demo) for (const f of shown) if (f.airline) f.route = { SWA1844: 'DEN-PHX', AAL2291: 'PHX-DFW', UAL1520: 'SFO-PHX', DAL1123: 'PHX-ATL', FDX772: 'MEM-LAX' }[f.callsign] || '';
   drawFrame(fb, cfg, shown, total, eligible, err);
@@ -362,12 +369,13 @@ function drawFrame(fb, cfg, flights, total, eligible, err) {
   // aircraft
   const items = flights.map((f) => {
     const d = SHAPES[f.icon], iw = d[0] * f.iconScale * 0.95 * ICON_MUL, ih = d[1] * f.iconScale * 0.95 * ICON_MUL;
-    const x = xOf(f), y = Math.min(yOf(f.alt), groundY - 10);
-    return { f, x, y, iw, ih, r: Math.max(iw, ih) / 2 + 1 };
+    const lx = xOf(f), ly = Math.min(yOf(f.alt), groundY - 10);
+    const nw = f.now || f, x = xOf(nw), y = Math.min(yOf(nw.alt), groundY - 10);
+    return { f, lx, ly, x, y, iw, ih, r: Math.max(iw, ih) / 2 + 1 };
   });
   const obstacles = [rc(0, groundY - 22, W, H), rc(0, 0, W, CT), rc(ax - 15, groundY - 28, ax + 15, groundY)];
   if (classA) obstacles.push(classA);
-  items.forEach((it) => obstacles.push(rc(it.x - it.r, it.y - it.r, it.x + it.r, it.y + it.r)));
+  items.forEach((it) => obstacles.push(rc(it.lx - it.r, it.ly - it.r, it.lx + it.r, it.ly + it.r)));
   for (const it of items) { fb.disc(it.x, it.y, it.r, 0, groundY - 2); drawIcon(fb, it, cfg.mode); }
   drawPoly(fb, 'ground_tower', ax, groundY - 13, 26, 26, 0, true);
 
@@ -388,10 +396,10 @@ function drawFrame(fb, cfg, flights, total, eligible, err) {
     outer: for (let di = 0; di < dists.length; di++) {
       const d = dists[di];
       const spots = [
-        [it.x - w / 2, it.y + d * 0.55 + 6], [it.x - w / 2, it.y - d * 0.55 - h - 6],
-        [it.x + d, it.y - h / 2], [it.x - d - w, it.y - h / 2],
-        [it.x + d * 0.5, it.y + d * 0.55 + 6], [it.x - d * 0.5 - w, it.y + d * 0.55 + 6],
-        [it.x + d * 0.5, it.y - d * 0.55 - h - 6], [it.x - d * 0.5 - w, it.y - d * 0.55 - h - 6],
+        [it.lx - w / 2, it.ly + d * 0.55 + 6], [it.lx - w / 2, it.ly - d * 0.55 - h - 6],
+        [it.lx + d, it.ly - h / 2], [it.lx - d - w, it.ly - h / 2],
+        [it.lx + d * 0.5, it.ly + d * 0.55 + 6], [it.lx - d * 0.5 - w, it.ly + d * 0.55 + 6],
+        [it.lx + d * 0.5, it.ly - d * 0.55 - h - 6], [it.lx - d * 0.5 - w, it.ly - d * 0.55 - h - 6],
       ];
       for (let si = 0; si < spots.length; si++) {
         const l = Math.min(Math.max(spots[si][0], CL + 4), CR - w - 2), t = spots[si][1];
@@ -404,7 +412,7 @@ function drawFrame(fb, cfg, flights, total, eligible, err) {
         else if (!best || (best.area > 0 && area < best.area)) best = { box: bx, area, cost: 1e6 + area };
       }
     }
-    if (!best) { const l = Math.min(Math.max(it.x - w / 2, CL + 4), CR - w - 2), t = Math.min(Math.max(it.y + it.r + 4, CT + 2), groundY - h - 3); best = { box: rc(l, t, l + w, t + h) }; }
+    if (!best) { const l = Math.min(Math.max(it.lx - w / 2, CL + 4), CR - w - 2), t = Math.min(Math.max(it.ly + it.r + 4, CT + 2), groundY - h - 3); best = { box: rc(l, t, l + w, t + h) }; }
     const b = best.box;
     obstacles.push(b);
 
@@ -452,7 +460,7 @@ function tri(fb, x, y, s, dir) { fb.poly(dir > 0 ? [[x, y + s], [x + s / 2, y], 
 // Silhouettes: tar1090 icons flattened to polygons. Nose points up; rotated like the Liquid template does.
 // ---------------------------------------------------------------------------------------------
 function drawIcon(fb, it, mode) {
-  const f = it.f;
+  const f = it.f.now || it.f;
   const pitch = f.climbing ? 20 : f.descending ? -20 : 0;
   const east = mode === 'ew' ? Math.sin(toRad(f.heading)) >= 0 : f.outbound;
   const rot = east ? 90 - pitch : 270 + pitch;
