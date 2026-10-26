@@ -55,6 +55,7 @@ export default {
         });
       }
       if (url.pathname === '/api/display') {
+        console.log('device', JSON.stringify({ rate: req.headers.get('refresh-rate'), batt: req.headers.get('battery-voltage'), rssi: req.headers.get('rssi'), fw: req.headers.get('fw-version') }));
         const bucket = Math.floor(Date.now() / 1000 / Math.max(1, cfg.refresh));
         return json({
           status: 0,
@@ -65,7 +66,7 @@ export default {
           update_firmware: false, firmware_url: '', reset_firmware: false, special_function: '',
         });
       }
-      if (url.pathname === '/api/log') return json({ status: 200 });
+      if (url.pathname === '/api/log') { console.log('device-log', (await req.text()).slice(0, 1500)); return json({ status: 200 }); }
       if (url.pathname.startsWith('/img/') || url.pathname === '/preview.png') {
         const demo = url.searchParams.has('demo') || String(env.DEMO) === 'true';
         const fb = await renderFrame(cfg, demo);
