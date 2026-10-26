@@ -268,10 +268,12 @@ async function renderFrame(cfg, demo) {
   const ageAt = (t) => (demo ? 0 : (t - memo.at) / 1000);
   const { shown, total, eligible } = pickFlights(demo ? demoList(cfg, tLay) : list, cfg, ageAt(tLay));
   const live = new Map(pickFlights(demo ? demoList(cfg, tNow) : list, cfg, ageAt(tNow)).eligible.map((f) => [f.key, f]));
-  for (const f of shown) f.now = live.get(f.key) || f;
+  const tEnd = tLay + cfg.tagHold * 1000;
+  const later = new Map(pickFlights(demo ? demoList(cfg, tEnd) : list, cfg, ageAt(tEnd)).eligible.map((f) => [f.key, f]));
+  for (const f of shown) { f.now = live.get(f.key) || f; f.later = later.get(f.key) || f.now; }
   if (cfg.routes && !demo) await lookupRoutes(shown);
   if (demo) for (const f of shown) if (f.airline) f.route = { SWA1844: 'DEN-PHX', AAL2291: 'PHX-DFW', UAL1520: 'SFO-PHX', DAL1123: 'PHX-ATL', FDX772: 'MEM-LAX' }[f.callsign] || '';
-  drawFrame(fb, cfg, shown, total, eligible, err);
+  drawFrame(fb, cfg, shown, total, eligible, err, tLay);
   return fb;
 }
 
@@ -291,7 +293,8 @@ function T(fb, str, x, base, key) {
 }
 function roundBox(fb, x, y, w, h, t) { box(fb, x, y, w, h, t); for (const [cx, cy] of [[x, y], [x + w - 1, y], [x, y + h - 1], [x + w - 1, y + h - 1]]) fb.px(cx, cy, 0); }
 
-function drawFrame(fb, cfg, flights, total, eligible, err) {
+let layoutCache = { sig: '', boxes: [] };
+function drawFrame(fb, cfg, flights, total, eligible, err, layoutAt = 0) {
   // header
   const time = new Intl.DateTimeFormat('en-GB', { timeZone: cfg.tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
   const hb = 44;
@@ -366,70 +369,100 @@ function drawFrame(fb, cfg, flights, total, eligible, err) {
   if (err && !flights.length) { fb.rect(180, 200, 440, 70, 0); box(fb, 180, 200, 440, 70, 3); T(fb, 'NO DATA', 330, 232, 'b20'); T(fb, err.slice(0, 50).toUpperCase(), 190, 256, 'b11'); drawFooter(fb, ceiling); return; }
   if (!flights.length) { fb.rect(250, 215, 300, 46, 0); box(fb, 250, 215, 300, 46, 3); T(fb, 'NO TARGETS IN RANGE', 270, 245, 'b14'); drawFooter(fb, ceiling); return; }
 
-  // aircraft
+  // aircraft: icons at their live position, tags laid out around the path each icon will cover
+  // before the layout is rebuilt (tagHold seconds), so a tag never sits where its own or a
+  // neighbour's icon is about to fly.
+  const clampY = (a) => Math.min(yOf(a), groundY - 10);
   const items = flights.map((f) => {
     const d = SHAPES[f.icon], iw = d[0] * f.iconScale * 0.95 * ICON_MUL, ih = d[1] * f.iconScale * 0.95 * ICON_MUL;
-    const lx = xOf(f), ly = Math.min(yOf(f.alt), groundY - 10);
-    const nw = f.now || f, x = xOf(nw), y = Math.min(yOf(nw.alt), groundY - 10);
-    return { f, lx, ly, x, y, iw, ih, r: Math.max(iw, ih) / 2 + 1 };
+    const nw = f.now || f, lt = f.later || nw;
+    const lx = xOf(f), ly = clampY(f.alt), ex = xOf(lt), ey = clampY(lt.alt);
+    const r = Math.max(iw, ih) / 2 + 1;
+    return {
+      f, iw, ih, r, x: xOf(nw), y: clampY(nw.alt), lx, ly, ex, ey, mx: (lx + ex) / 2, my: (ly + ey) / 2,
+      sweep: rc(Math.min(lx, ex) - r, Math.min(ly, ey) - r, Math.max(lx, ex) + r, Math.max(ly, ey) + r),
+      tag: tagText(f), box: null,
+    };
   });
-  const obstacles = [rc(0, groundY - 22, W, H), rc(0, 0, W, CT), rc(ax - 15, groundY - 28, ax + 15, groundY)];
-  if (classA) obstacles.push(classA);
-  items.forEach((it) => obstacles.push(rc(it.lx - it.r, it.ly - it.r, it.lx + it.r, it.ly + it.r)));
-  for (const it of items) { fb.disc(it.x, it.y, it.r, 0, groundY - 2); drawIcon(fb, it, cfg.mode); }
+  const fixed = [rc(0, groundY - 22, W, H), rc(0, 0, W, CT), rc(ax - 15, groundY - 28, ax + 15, groundY)];
+  if (classA) fixed.push(classA);
+
+  const candidates = (it) => {
+    const { w, h } = it.tag, s = it.sweep, out = [];
+    for (const g of [4, 10, 20, 34, 52, 76, 104]) {
+      for (const o of [0, -0.5, 0.5]) {
+        out.push([it.mx - w / 2 + o * w, s.t - g - h], [it.mx - w / 2 + o * w, s.b + g],
+          [s.r + g, it.my - h / 2 + o * h], [s.l - g - w, it.my - h / 2 + o * h]);
+      }
+      out.push([s.r + g * 0.6, s.b + g * 0.6], [s.l - g * 0.6 - w, s.b + g * 0.6],
+        [s.r + g * 0.6, s.t - g * 0.6 - h], [s.l - g * 0.6 - w, s.t - g * 0.6 - h]);
+    }
+    return out.map(([l, t]) => rc(l, t, l + w, t + h));
+  };
+  const leaderEnd = (it, bx) => [Math.min(Math.max(it.mx, bx.l), bx.r), Math.min(Math.max(it.my, bx.t), bx.b)];
+  const cost = (it, bx) => {
+    if (bx.l < CL + 3 || bx.r > CR - 2 || bx.t < CT + 2 || bx.b > groundY - 3) return Infinity;
+    let c = 0;
+    for (const ob of fixed) c += overlap(bx, ob) * 40;
+    for (const jt of items) {
+      c += overlap(bx, jt.sweep) * 40;
+      if (jt !== it && jt.box) c += overlap(bx, jt.box) * 60;
+    }
+    const [px, py] = leaderEnd(it, bx);
+    c += Math.hypot(px - it.mx, py - it.my) * 0.6;
+    for (const jt of items) {
+      if (jt === it) continue;
+      if (segHitsRect(it.mx, it.my, px, py, jt.sweep)) c += 25;
+      if (jt.box) {
+        if (segHitsRect(it.mx, it.my, px, py, jt.box)) c += 400;
+        const [qx, qy] = leaderEnd(jt, jt.box);
+        if (segHitsRect(jt.mx, jt.my, qx, qy, bx)) c += 400;
+      }
+    }
+    return c;
+  };
+  const place = (it) => {
+    let best = null, bc = Infinity;
+    for (const bx of candidates(it)) { const c = cost(it, bx); if (c < bc) { bc = c; best = bx; } }
+    if (!best) { // nothing fits inside the chart: park it as close to its anchor as the chart allows
+      const { w, h } = it.tag;
+      const l = Math.min(Math.max(it.mx - w / 2, CL + 4), CR - w - 2), t = Math.min(Math.max(it.my + it.r + 4, CT + 2), groundY - h - 3);
+      best = rc(l, t, l + w, t + h);
+    }
+    return best;
+  };
+  // The layout only changes when the hold bucket changes, so keep it between frames (per isolate).
+  const sig = `${layoutAt}|${groundY}|${items.map((it) => `${it.f.key}:${it.tag.w}x${it.tag.h}`).join(',')}`;
+  if (layoutCache.sig === sig) items.forEach((it, i) => { it.box = layoutCache.boxes[i]; });
+  else {
+    const order = [...items].sort((a, b) => b.tag.w * b.tag.h - a.tag.w * a.tag.h);
+    for (const it of order) it.box = place(it);
+    for (let pass = 0; pass < 2; pass++) for (const it of order) { // let each tag reconsider with everything else in place
+      const old = it.box; it.box = null;
+      const nb = place(it), oc = cost(it, old);
+      it.box = cost(it, nb) < oc ? nb : old;
+    }
+    layoutCache = { sig, boxes: items.map((it) => it.box) };
+  }
+
+  for (const it of items) drawIcon(fb, it, cfg.mode);
   drawPoly(fb, 'ground_tower', ax, groundY - 13, 26, 26, 0, true);
 
   for (const it of items) {
-    const f = it.f, big = f.airline;
-    const l1 = f.callsign.slice(0, 8);
-    const k1 = big ? 'b12' : 'r10', kt = big ? 'b8' : 'r8', k2 = big ? 'b10' : 'r10', k3 = 'r9';
-    const alt = f.alt >= 18000 ? `FL${String(Math.round(f.alt / 100)).padStart(3, '0')}` : `${(Math.round(f.alt / 100) / 10).toFixed(1)}k`;
-    const spd = `${f.gs}kt`;
-    const trend = f.climbing ? 1 : f.descending ? -1 : 0;
-    const w1 = tw(l1, k1) + (f.type ? 4 + tw(f.type, kt) : 0);
-    const w2 = tw(alt, k2) + (trend ? 11 : 0) + 4 + tw(spd, k2);
-    const w3 = f.route ? tw(f.route, k3) : 0;
-    const w = Math.ceil(Math.max(w1, w2, w3) + 10);
-    const h = 4 + FONTS[k1].h - 1 + 1 + FONTS[k2].h - 1 + (f.route ? FONTS[k3].h : 0) + 4;
-    let best = null;
-    const dists = [it.r + 4, it.r + 12, it.r + 26, it.r + 44, it.r + 68, it.r + 98];
-    outer: for (let di = 0; di < dists.length; di++) {
-      const d = dists[di];
-      const spots = [
-        [it.lx - w / 2, it.ly + d * 0.55 + 6], [it.lx - w / 2, it.ly - d * 0.55 - h - 6],
-        [it.lx + d, it.ly - h / 2], [it.lx - d - w, it.ly - h / 2],
-        [it.lx + d * 0.5, it.ly + d * 0.55 + 6], [it.lx - d * 0.5 - w, it.ly + d * 0.55 + 6],
-        [it.lx + d * 0.5, it.ly - d * 0.55 - h - 6], [it.lx - d * 0.5 - w, it.ly - d * 0.55 - h - 6],
-      ];
-      for (let si = 0; si < spots.length; si++) {
-        const l = Math.min(Math.max(spots[si][0], CL + 4), CR - w - 2), t = spots[si][1];
-        if (t < CT + 2 || t + h > groundY - 3) continue;
-        const bx = rc(l, t, l + w, t + h);
-        let area = 0;
-        for (const ob of obstacles) area += overlap(bx, ob);
-        const cost = di * 10 + si * 1.5 + Math.abs(l - spots[si][0]) * 0.3;
-        if (area === 0) { if (!best || best.area > 0 || cost < best.cost) best = { box: bx, area, cost }; if (cost < 20) break outer; }
-        else if (!best || (best.area > 0 && area < best.area)) best = { box: bx, area, cost: 1e6 + area };
-      }
-    }
-    if (!best) { const l = Math.min(Math.max(it.lx - w / 2, CL + 4), CR - w - 2), t = Math.min(Math.max(it.ly + it.r + 4, CT + 2), groundY - h - 3); best = { box: rc(l, t, l + w, t + h) }; }
-    const b = best.box;
-    obstacles.push(b);
-
+    const f = it.f, big = f.airline, tg = it.tag, b = it.box;
     const nx = Math.min(Math.max(it.x, b.l), b.r), ny = Math.min(Math.max(it.y, b.t), b.b);
     if (Math.hypot(nx - it.x, ny - it.y) - it.r > 6) fb.line(it.x, it.y, nx, ny, 1, 1);
-
-    fb.rect(b.l, b.t, w, h, 0);
-    if (f.military) dashedBox(fb, b.l, b.t, w, h, big ? 2 : 1); else roundBox(fb, b.l, b.t, w, h, big ? 2 : 1);
+    fb.rect(b.l, b.t, tg.w, tg.h, 0);
+    if (f.military) dashedBox(fb, b.l, b.t, tg.w, tg.h, big ? 2 : 1); else roundBox(fb, b.l, b.t, tg.w, tg.h, big ? 2 : 1);
     const cx = b.l + 5;
-    let base = b.t + 3 + FONTS[k1].a;
-    const ex = T(fb, l1, cx, base, k1);
-    if (f.type) T(fb, f.type, ex + 4, base, kt);
-    base += 1 + FONTS[k2].h - 1;
-    let x2 = T(fb, alt, cx, base, k2);
-    if (trend) { tri(fb, x2 + 2, base - 7, 7, trend); x2 += 11; }
-    T(fb, spd, x2 + 4, base, k2);
-    if (f.route) T(fb, f.route, cx, base + FONTS[k3].h, k3);
+    let base = b.t + 3 + FONTS[tg.k1].a;
+    const ex = T(fb, tg.l1, cx, base, tg.k1);
+    if (f.type) T(fb, f.type, ex + 4, base, tg.kt);
+    base += 1 + FONTS[tg.k2].h - 1;
+    let x2 = T(fb, tg.alt, cx, base, tg.k2);
+    if (tg.trend) { tri(fb, x2 + 2, base - 7, 7, tg.trend); x2 += 11; }
+    T(fb, tg.spd, x2 + 4, base, tg.k2);
+    if (f.route) T(fb, f.route, cx, base + FONTS[tg.k3].h, tg.k3);
   }
   drawFooter(fb, ceiling);
 }
@@ -448,6 +481,35 @@ function drawFooter(fb, ceiling) {
 }
 
 function rc(l, t, r, b) { return { l, t, r, b }; }
+
+// Text and size of one tag.
+function tagText(f) {
+  const big = f.airline;
+  const l1 = f.callsign.slice(0, 8);
+  const k1 = big ? 'b12' : 'r10', kt = big ? 'b8' : 'r8', k2 = big ? 'b10' : 'r10', k3 = 'r9';
+  const alt = f.alt >= 18000 ? `FL${String(Math.round(f.alt / 100)).padStart(3, '0')}` : `${(Math.round(f.alt / 100) / 10).toFixed(1)}k`;
+  const spd = `${f.gs}kt`;
+  const trend = f.climbing ? 1 : f.descending ? -1 : 0;
+  const w1 = tw(l1, k1) + (f.type ? 4 + tw(f.type, kt) : 0);
+  const w2 = tw(alt, k2) + (trend ? 11 : 0) + 4 + tw(spd, k2);
+  const w3 = f.route ? tw(f.route, k3) : 0;
+  const w = Math.ceil(Math.max(w1, w2, w3) + 10);
+  const h = 4 + FONTS[k1].h - 1 + 1 + FONTS[k2].h - 1 + (f.route ? FONTS[k3].h : 0) + 4;
+  return { l1, k1, kt, k2, k3, alt, spd, trend, w, h };
+}
+
+// Does the segment (x0,y0)-(x1,y1) pass through rectangle r? (Liang-Barsky)
+function segHitsRect(x0, y0, x1, y1, r) {
+  let t0 = 0, t1 = 1;
+  const dx = x1 - x0, dy = y1 - y0;
+  for (const [p, q] of [[-dx, x0 - r.l], [dx, r.r - x0], [-dy, y0 - r.t], [dy, r.b - y0]]) {
+    if (p === 0) { if (q < 0) return false; } else {
+      const t = q / p;
+      if (p < 0) { if (t > t1) return false; if (t > t0) t0 = t; } else { if (t < t0) return false; if (t < t1) t1 = t; }
+    }
+  }
+  return true;
+}
 function overlap(a, b) { const w = Math.min(a.r, b.r) - Math.max(a.l, b.l), h = Math.min(a.b, b.b) - Math.max(a.t, b.t); return w > 1 && h > 1 ? w * h : 0; }
 function box(fb, x, y, w, h, t) { fb.rect(x, y, w, t, 1); fb.rect(x, y + h - t, w, t, 1); fb.rect(x, y, t, h, 1); fb.rect(x + w - t, y, t, h, 1); }
 function dashedBox(fb, x, y, w, h, t) {
